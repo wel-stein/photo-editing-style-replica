@@ -21,7 +21,6 @@ def _load_raw_rgb(path: Path) -> np.ndarray:
         rgb16 = raw.postprocess(
             output_bps=16,
             use_camera_wb=True,
-            no_auto_bright=True,
             output_color=rawpy.ColorSpace.sRGB,
             gamma=(2.222, 4.5),  # standard sRGB-ish gamma
         )
