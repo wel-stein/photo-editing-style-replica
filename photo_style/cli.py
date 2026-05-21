@@ -22,6 +22,7 @@ from .feature_cache import FeatureCache
 from .features import DEFAULT_MAX_DIM
 from .inference import apply_profile
 from .io_utils import find_pairs, load_image_rgb, save_image_rgb
+from .lut_export import DEFAULT_LUT_SIZE, export_profile_lut
 from .profile_store import (
     DEFAULT_PROFILES_DIR,
     StyleProfile,
@@ -188,6 +189,46 @@ def _apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_lut(args: argparse.Namespace) -> int:
+    profile = load_profile(args.profile, profiles_dir=args.profiles_dir)
+    cluster: int | str
+    cluster = "average" if args.cluster == "average" else int(args.cluster)
+    t0 = time.perf_counter()
+    out_path = export_profile_lut(
+        profile,
+        args.output,
+        cluster=cluster,
+        size=args.size,
+        use_rf=not args.no_rf,
+    )
+    elapsed = time.perf_counter() - t0
+    logger.success(
+        "Wrote {}x{}x{} LUT to {} (cluster={}, method={}) in {:.1f}s",
+        args.size,
+        args.size,
+        args.size,
+        out_path,
+        cluster,
+        "B (RF)" if not args.no_rf else "A",
+        elapsed,
+    )
+    print()
+    print("Install in Lightroom Classic:")
+    print("  Lightroom cannot read .cube directly; convert to .xmp Camera Raw profile first.")
+    print("  Easiest path: use Photoshop > Camera Raw Filter > Profile dropdown > 'Browse' > select wrapper .xmp,")
+    print("  OR for a quick visual test of the LUT itself:")
+    print("    Photoshop > File > Open your photo > Image > Adjustments > Color Lookup")
+    print("    > Load 3D LUT > select this .cube. Verify the look matches before wrapping for Lightroom.")
+    print()
+    print("  Wrap .cube as .xmp for Lightroom Classic:")
+    print("    - free option: https://github.com/cawtekfilms/lutbaker  (cube -> xmp)")
+    print("    - then drop the .xmp into:")
+    print("        Win: %APPDATA%\\Adobe\\CameraRaw\\Settings\\")
+    print("        Mac: ~/Library/Application Support/Adobe/CameraRaw/Settings/")
+    print("    - restart Lightroom; the profile appears under Develop > Profile > Browse > User Profiles.")
+    return 0
+
+
 def _list(args: argparse.Namespace) -> int:
     names = list_profiles(args.profiles_dir)
     if not names:
@@ -263,6 +304,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR, help="Where profiles live"
     )
     apply_p.set_defaults(func=_apply)
+
+    export = sub.add_parser("export-lut", help="Export a profile as a .cube 3D LUT.")
+    export.add_argument("--profile", required=True, help="Profile name (without extension)")
+    export.add_argument("--output", required=True, type=Path, help="Path to write the .cube file")
+    export.add_argument(
+        "--cluster",
+        default="average",
+        help="Cluster index (e.g. 0) or 'average' for a single global LUT",
+    )
+    export.add_argument(
+        "--size", type=int, default=DEFAULT_LUT_SIZE, help="LUT side length (default 33)"
+    )
+    export.add_argument("--no-rf", action="store_true", help="Bake Method A instead of RF")
+    export.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR)
+    export.set_defaults(func=_export_lut)
 
     ls = sub.add_parser("list", help="List saved profiles.")
     ls.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR)
