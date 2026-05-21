@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Project artifacts
+profiles/
+data/originals/*
+data/edited/*
+!data/originals/.gitkeep
+!data/edited/.gitkeep
+out.jpg
+*.cube
