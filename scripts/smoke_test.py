@@ -56,7 +56,16 @@ def main() -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     save_image_rgb(styled, out_path)
-    logger.success("Wrote {} ({}x{})", out_path, styled.shape[1], styled.shape[0])
+    size_kb = out_path.stat().st_size / 1024
+    logger.success(
+        "Wrote {} (shape={}, dtype={}, range=[{},{}], file={:.1f} KB)",
+        out_path,
+        styled.shape,
+        styled.dtype,
+        int(styled.min()),
+        int(styled.max()),
+        size_kb,
+    )
     return 0
 
 
