@@ -85,3 +85,28 @@ def test_apply_cluster_transform_idempotent_shape() -> None:
     twice = apply_cluster_transform(once, transform)
     assert once.shape == twice.shape == src.shape
     assert once.dtype == twice.dtype == np.uint8
+
+
+def test_fit_cluster_transform_with_rf_attaches_forest() -> None:
+    rng = np.random.default_rng(0)
+    src, tgt = _synthetic_pair(rng, size=(128, 128))
+    s_pix, t_pix = sample_pair_pixels(src, tgt, n_samples=800, rng=rng)
+    transform = fit_cluster_transform(
+        [(s_pix, t_pix)], fit_rf=True, rf_n_estimators=8, rf_max_samples=600
+    )
+    assert transform.pixel_rf is not None
+
+
+def test_apply_cluster_transform_rf_path_differs_from_method_a() -> None:
+    rng = np.random.default_rng(0)
+    src, tgt = _synthetic_pair(rng, size=(96, 96))
+    s_pix, t_pix = sample_pair_pixels(src, tgt, n_samples=800, rng=rng)
+    transform = fit_cluster_transform(
+        [(s_pix, t_pix)], fit_rf=True, rf_n_estimators=8, rf_max_samples=600
+    )
+
+    out_b = apply_cluster_transform(src, transform, use_rf=True)
+    out_a = apply_cluster_transform(src, transform, use_rf=False)
+    assert out_a.shape == out_b.shape == src.shape
+    # RF and Reinhard+curves should generally produce different outputs.
+    assert not np.array_equal(out_a, out_b)

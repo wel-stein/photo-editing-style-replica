@@ -1,8 +1,8 @@
 """Style models: Reinhard color transfer, per-channel polynomial tone curves,
-and per-cluster transforms that stack them.
+per-cluster transforms that stack them, and an optional Random Forest pixel
+regressor (Method B).
 
-All math runs in OpenCV's LAB (channels scaled 0-255). The Random Forest
-pixel regressor (Method B) lands in Phase 4.
+All math runs in OpenCV's LAB (channels scaled 0-255).
 """
 
 from __future__ import annotations
@@ -12,10 +12,14 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 from numpy.polynomial import Polynomial
+from sklearn.ensemble import RandomForestRegressor
 
 LAB_CHANNELS = ("L", "a", "b")
 DEFAULT_CURVE_DEGREE = 3
 DEFAULT_PIXEL_SAMPLE_MAX_DIM = 1024
+DEFAULT_RF_N_ESTIMATORS = 40
+DEFAULT_RF_MAX_DEPTH = 10
+DEFAULT_RF_MAX_SAMPLES = 80_000
 
 
 @dataclass
@@ -44,10 +48,16 @@ class TonalCurves:
 
 @dataclass
 class ClusterTransform:
-    """Style transform for one cluster: Reinhard + residual polynomial curves."""
+    """Style transform for one cluster.
+
+    Always carries Method A (Reinhard + residual polynomial curves).
+    `pixel_rf` is the optional Method B Random Forest pixel regressor (LAB
+    in -> LAB out). When present, it overrides Method A at inference.
+    """
 
     reinhard: ReinhardStats
     curves: TonalCurves
+    pixel_rf: RandomForestRegressor | None = None
 
 
 def _rgb_to_lab(rgb_u8: np.ndarray) -> np.ndarray:
@@ -128,13 +138,21 @@ def sample_pair_pixels(
 
 def fit_cluster_transform(
     pair_pixels: list[tuple[np.ndarray, np.ndarray]],
+    *,
     degree: int = DEFAULT_CURVE_DEGREE,
+    fit_rf: bool = False,
+    rf_n_estimators: int = DEFAULT_RF_N_ESTIMATORS,
+    rf_max_depth: int = DEFAULT_RF_MAX_DEPTH,
+    rf_max_samples: int = DEFAULT_RF_MAX_SAMPLES,
+    seed: int = 0,
 ) -> ClusterTransform:
     """Fit Reinhard stats + per-channel residual polynomial curves for one cluster.
 
     `pair_pixels` is a list of (src_lab_samples, tgt_lab_samples) from each pair
     assigned to this cluster. The polynomial is fit on the *residual* after the
     Reinhard step, so its job is just to capture nonlinear tonal shape.
+
+    Set `fit_rf=True` to also train a Random Forest pixel regressor (Method B).
     """
     if not pair_pixels:
         raise ValueError("Cannot fit a cluster transform with zero pairs")
@@ -150,7 +168,53 @@ def fit_cluster_transform(
     b_poly = Polynomial.fit(intermediate[:, 2], all_tgt[:, 2], deg=degree)
     curves = TonalCurves(L_poly=L_poly, a_poly=a_poly, b_poly=b_poly, degree=degree)
 
-    return ClusterTransform(reinhard=reinhard, curves=curves)
+    pixel_rf = None
+    if fit_rf:
+        pixel_rf = fit_pixel_rf(
+            all_src,
+            all_tgt,
+            n_estimators=rf_n_estimators,
+            max_depth=rf_max_depth,
+            max_samples=rf_max_samples,
+            seed=seed,
+        )
+
+    return ClusterTransform(reinhard=reinhard, curves=curves, pixel_rf=pixel_rf)
+
+
+def fit_pixel_rf(
+    src_lab_pixels: np.ndarray,
+    tgt_lab_pixels: np.ndarray,
+    *,
+    n_estimators: int = DEFAULT_RF_N_ESTIMATORS,
+    max_depth: int = DEFAULT_RF_MAX_DEPTH,
+    max_samples: int = DEFAULT_RF_MAX_SAMPLES,
+    seed: int = 0,
+) -> RandomForestRegressor:
+    """Train a multi-output Random Forest mapping LAB pixels src -> tgt.
+
+    Subsamples to `max_samples` to keep profile size and training time bounded.
+    """
+    if len(src_lab_pixels) != len(tgt_lab_pixels):
+        raise ValueError("Source and target pixel counts must match")
+    if len(src_lab_pixels) == 0:
+        raise ValueError("Cannot train a Random Forest on zero samples")
+
+    rng = np.random.default_rng(seed)
+    n = len(src_lab_pixels)
+    if n > max_samples:
+        idx = rng.choice(n, size=max_samples, replace=False)
+        src_lab_pixels = src_lab_pixels[idx]
+        tgt_lab_pixels = tgt_lab_pixels[idx]
+
+    rf = RandomForestRegressor(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        n_jobs=-1,
+        random_state=seed,
+    )
+    rf.fit(src_lab_pixels.astype(np.float32), tgt_lab_pixels.astype(np.float32))
+    return rf
 
 
 def _apply_curves_lab(lab_pixels: np.ndarray, curves: TonalCurves) -> np.ndarray:
@@ -161,9 +225,23 @@ def _apply_curves_lab(lab_pixels: np.ndarray, curves: TonalCurves) -> np.ndarray
     return out
 
 
-def apply_cluster_transform(rgb_u8: np.ndarray, transform: ClusterTransform) -> np.ndarray:
-    """Apply Reinhard then per-channel polynomial curves to an RGB image."""
+def apply_cluster_transform(
+    rgb_u8: np.ndarray,
+    transform: ClusterTransform,
+    *,
+    use_rf: bool = True,
+) -> np.ndarray:
+    """Apply a cluster's learned transform to an RGB image.
+
+    When `use_rf=True` and the transform has a fitted Random Forest, that is
+    used (Method B). Otherwise falls back to Reinhard + tonal curves (Method A).
+    """
     lab = _rgb_to_lab(rgb_u8)
-    lab = _apply_reinhard_lab(lab, transform.reinhard)
-    lab = _apply_curves_lab(lab, transform.curves)
+    if use_rf and transform.pixel_rf is not None:
+        h, w, _ = lab.shape
+        pred = transform.pixel_rf.predict(lab.reshape(-1, 3).astype(np.float32))
+        lab = pred.astype(np.float32).reshape(h, w, 3)
+    else:
+        lab = _apply_reinhard_lab(lab, transform.reinhard)
+        lab = _apply_curves_lab(lab, transform.curves)
     return _lab_to_rgb(lab)
