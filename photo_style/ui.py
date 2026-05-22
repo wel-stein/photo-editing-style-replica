@@ -374,8 +374,15 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
                         choices=list_profiles(profiles_dir), label="Profile"
                     )
                     apply_refresh = gr.Button("⟳ Refresh", scale=0)
-                apply_input = gr.Image(
-                    label="Input image (JPG / PNG / RAW)", type="filepath"
+                apply_input = gr.File(
+                    label="Input image (JPG / PNG / RAW: NEF / CR2 / CR3 / ARW / DNG / ...)",
+                    type="filepath",
+                    file_count="single",
+                    file_types=[
+                        "image",
+                        ".nef", ".cr2", ".cr3", ".arw", ".dng",
+                        ".raf", ".rw2", ".orf", ".pef",
+                    ],
                 )
                 apply_use_rf = gr.Checkbox(value=True, label="Use Random Forest (Method B)")
                 apply_btn = gr.Button("Apply Profile", variant="primary")
