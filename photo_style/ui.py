@@ -289,28 +289,80 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
                 )
                 with gr.Row():
                     originals_dir = gr.Textbox(
-                        label="Originals folder", placeholder=r"C:\path\to\NEFs"
+                        label="Originals folder",
+                        placeholder=r"C:\path\to\NEFs",
+                        info=(
+                            "Folder containing your unedited files (RAW: NEF / CR2 / CR3 / "
+                            "ARW / DNG, or JPG / PNG). Paste the absolute path."
+                        ),
                     )
                     edited_dir = gr.Textbox(
-                        label="Edited folder", placeholder=r"C:\path\to\edits"
+                        label="Edited folder",
+                        placeholder=r"C:\path\to\edits",
+                        info=(
+                            "Folder containing the matching edited versions. Each file must "
+                            "share its filename stem with one in the originals folder. "
+                            "Extensions can differ (.NEF ↔ .jpg is fine)."
+                        ),
                     )
                 match_btn = gr.Button("Match Pairs")
                 match_msg = gr.Textbox(label="Match result", interactive=False)
                 unmatched_list = gr.JSON(label="Unmatched files")
 
                 with gr.Row():
-                    k_slider = gr.Slider(3, 7, value=4, step=1, label="Number of clusters")
+                    k_slider = gr.Slider(
+                        3, 7, value=4, step=1,
+                        label="Number of clusters",
+                        info=(
+                            "Groups your photos into N 'scene types' (sunny / golden hour / "
+                            "indoor warm / blue hour / …); each cluster learns its own color "
+                            "transform. Rule of thumb: aim for at least 20 pairs per cluster. "
+                            "Use 3 if you shoot in one or two lighting conditions, 4 (default) "
+                            "for a typical mixed library, 5-7 for very varied content."
+                        ),
+                    )
                     samples_slider = gr.Slider(
-                        5000, 50000, value=10000, step=1000, label="Pixel samples per pair"
+                        5000, 50000, value=10000, step=1000,
+                        label="Pixel samples per pair",
+                        info=(
+                            "How many random pixels to sample from each before/after pair when "
+                            "fitting the color transform. More samples = better generalization "
+                            "but slower training. 10k (default) is the spec's recommendation; "
+                            "raise to 30-50k if validation ΔE stays above 4."
+                        ),
                     )
                 with gr.Row():
                     val_slider = gr.Slider(
-                        0.0, 0.4, value=0.2, step=0.05, label="Validation fraction"
+                        0.0, 0.4, value=0.2, step=0.05,
+                        label="Validation fraction",
+                        info=(
+                            "Fraction of pairs held out of training and scored with CIEDE2000 "
+                            "ΔE so you can see how close the learned style gets to your real "
+                            "edits. ΔE<1 invisible, 1-2 barely perceptible, 3-5 acceptable, "
+                            ">5 visibly off. Set to 0 if you have fewer than ~30 pairs."
+                        ),
                     )
                     use_rf_check = gr.Checkbox(
-                        value=True, label="Train Random Forest (Method B)"
+                        value=True,
+                        label="Train Random Forest (Method B)",
+                        info=(
+                            "Trains a per-pixel Random Forest on top of the Reinhard+curves "
+                            "baseline. Catches local nonlinear edits (warm only highlights, "
+                            "shift greens toward teal, dodge subject, etc.) that the baseline "
+                            "can't model. Keep ON for libraries of 50+ pairs with selective "
+                            "edits; turn OFF for tiny libraries (RF overfits) or pure global "
+                            "looks (baseline already wins and profile stays smaller/faster)."
+                        ),
                     )
-                profile_name_box = gr.Textbox(label="Profile name", placeholder="my_style")
+                profile_name_box = gr.Textbox(
+                    label="Profile name",
+                    placeholder="my_style",
+                    info=(
+                        "Used as the filename for the saved profile (my_style.pkl + "
+                        "my_style.json). No spaces recommended; existing profiles with the "
+                        "same name will be overwritten."
+                    ),
+                )
                 train_btn = gr.Button("Train Profile", variant="primary")
                 train_status = gr.Textbox(label="Status", lines=4, interactive=False)
                 cluster_plot = gr.Plot(label="Cluster assignments")
