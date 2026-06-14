@@ -15,6 +15,7 @@ import gradio as gr
 import numpy as np
 from loguru import logger
 
+from .auto_enhance import EnhanceParams, auto_enhance, suggest_defaults
 from .clustering import fit_clusters
 from .evaluation import evaluate_profile_on_pairs
 from .feature_cache import FeatureCache
@@ -258,6 +259,69 @@ def helper_export_lut(
     return str(out_path), status
 
 
+def helper_auto_analyze(image_path: str | None) -> tuple[float, float, float, float, float, float, str]:
+    """Analyze an uploaded image and propose enhancement slider values.
+
+    Returns (wb, exposure, shadows, highlights, local_contrast, saturation, status).
+    """
+    if not image_path:
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "Upload a photo first."
+    rgb = load_image_rgb(image_path)
+    params = suggest_defaults(rgb)
+    status = (
+        f"Suggested: WB={params.white_balance:.2f}  Exp={params.exposure:.2f}  "
+        f"Sh={params.shadows:.2f}  Hi={params.highlights:.2f}  "
+        f"LC={params.local_contrast:.2f}  Sat={params.saturation:.2f}"
+    )
+    return (
+        params.white_balance,
+        params.exposure,
+        params.shadows,
+        params.highlights,
+        params.local_contrast,
+        params.saturation,
+        status,
+    )
+
+
+def helper_auto_enhance(
+    image_path: str | None,
+    white_balance: float,
+    exposure: float,
+    shadows: float,
+    highlights: float,
+    local_contrast: float,
+    saturation: float,
+) -> tuple[np.ndarray | None, np.ndarray | None, str | None, str]:
+    """Apply the auto-enhance pipeline with the given slider values.
+
+    Returns (before_rgb, after_rgb, downloadable_path, status_message).
+    """
+    if not image_path:
+        return None, None, None, "Upload a photo first."
+    rgb = load_image_rgb(image_path)
+    params = EnhanceParams(
+        white_balance=float(white_balance),
+        exposure=float(exposure),
+        shadows=float(shadows),
+        highlights=float(highlights),
+        local_contrast=float(local_contrast),
+        saturation=float(saturation),
+    )
+    enhanced = auto_enhance(rgb, params)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", prefix="auto_enhanced_", delete=False)
+    tmp.close()
+    save_image_rgb(enhanced, tmp.name)
+
+    status = (
+        f"Applied: WB={params.white_balance:.2f}  Exp={params.exposure:.2f}  "
+        f"Sh={params.shadows:.2f}  Hi={params.highlights:.2f}  "
+        f"LC={params.local_contrast:.2f}  Sat={params.saturation:.2f}"
+    )
+    return rgb, enhanced, tmp.name, status
+
+
 def _cluster_choices_for(profile_name: str, profiles_dir: Path = DEFAULT_PROFILES_DIR) -> list[str]:
     """Return ['average', '0', '1', ...] for the selected profile."""
     if not profile_name:
@@ -395,6 +459,71 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
                 apply_status = gr.Textbox(label="Status", interactive=False)
                 apply_download = gr.File(label="Download styled JPEG")
 
+            # ---------- Quick Auto-Enhance ----------
+            with gr.Tab("Quick Auto-Enhance"):
+                gr.Markdown(
+                    "**Independent from trained profiles.** Classical auto-correction "
+                    "(white balance, exposure, shadows, highlights, local contrast, saturation). "
+                    "Works on JPG, PNG, and RAW (NEF / CR2 / CR3 / ARW / DNG / …). "
+                    "No training data required."
+                )
+                ae_input = gr.File(
+                    label="Input image (JPG / PNG / RAW)",
+                    type="filepath",
+                    file_count="single",
+                    file_types=[
+                        "image",
+                        ".nef", ".cr2", ".cr3", ".arw", ".dng",
+                        ".raf", ".rw2", ".orf", ".pef",
+                    ],
+                )
+                gr.Markdown(
+                    "Click **Auto-Detect** to analyze the photo and set sensible defaults, "
+                    "or move the sliders manually."
+                )
+                with gr.Row():
+                    ae_wb = gr.Slider(
+                        0.0, 1.0, value=0.4, step=0.05,
+                        label="White balance",
+                        info="Gray-world correction. 0 = no change; 1 = full neutral correction.",
+                    )
+                    ae_exposure = gr.Slider(
+                        0.0, 1.0, value=0.3, step=0.05,
+                        label="Exposure",
+                        info="Pulls average brightness toward neutral. Works in both directions (brightens dark shots, darkens overexposed ones).",
+                    )
+                with gr.Row():
+                    ae_shadows = gr.Slider(
+                        0.0, 1.0, value=0.3, step=0.05,
+                        label="Shadows",
+                        info="Lifts dark values without touching midtones or highlights.",
+                    )
+                    ae_highlights = gr.Slider(
+                        0.0, 1.0, value=0.3, step=0.05,
+                        label="Highlights",
+                        info="Recovers bright values (compresses highlights). 1 = aggressive shoulder.",
+                    )
+                with gr.Row():
+                    ae_local = gr.Slider(
+                        0.0, 1.0, value=0.2, step=0.05,
+                        label="Local contrast",
+                        info="CLAHE on the L channel. Adds punch to flat photos. Too high = halos.",
+                    )
+                    ae_sat = gr.Slider(
+                        0.0, 1.0, value=0.3, step=0.05,
+                        label="Saturation",
+                        info="Boosts HSV saturation. 1 ≈ +60%. Use sparingly on portraits.",
+                    )
+                with gr.Row():
+                    ae_detect_btn = gr.Button("Auto-Detect", scale=1)
+                    ae_apply_btn = gr.Button("Apply", variant="primary", scale=2)
+                gr.Markdown("_Side-by-side before/after below. Click either image to zoom._")
+                with gr.Row():
+                    ae_before = gr.Image(label="Before", type="numpy", interactive=False)
+                    ae_after = gr.Image(label="After", type="numpy", interactive=False)
+                ae_status = gr.Textbox(label="Status", interactive=False)
+                ae_download = gr.File(label="Download enhanced JPEG")
+
             # ---------- Export LUT ----------
             with gr.Tab("Export LUT"):
                 with gr.Row():
@@ -522,6 +651,34 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
             _on_export_lut,
             inputs=[lut_profile_dd, lut_cluster, lut_size, lut_use_rf],
             outputs=[lut_download, lut_status],
+        )
+
+        # Quick Auto-Enhance wiring
+        def _on_ae_detect(image_path: str):
+            return helper_auto_analyze(image_path)
+
+        def _on_ae_apply(
+            image_path: str,
+            wb: float,
+            exposure: float,
+            shadows: float,
+            highlights: float,
+            local_c: float,
+            saturation: float,
+        ):
+            return helper_auto_enhance(
+                image_path, wb, exposure, shadows, highlights, local_c, saturation
+            )
+
+        ae_detect_btn.click(
+            _on_ae_detect,
+            inputs=ae_input,
+            outputs=[ae_wb, ae_exposure, ae_shadows, ae_highlights, ae_local, ae_sat, ae_status],
+        )
+        ae_apply_btn.click(
+            _on_ae_apply,
+            inputs=[ae_input, ae_wb, ae_exposure, ae_shadows, ae_highlights, ae_local, ae_sat],
+            outputs=[ae_before, ae_after, ae_download, ae_status],
         )
 
         return demo
