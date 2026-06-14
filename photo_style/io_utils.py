@@ -1,19 +1,24 @@
 """Image I/O helpers: RGB load/save via Pillow, RAW load via rawpy, pair discovery.
 
-EXIF preservation lands in a later phase.
+Output images carry EXIF from their source when possible (camera, lens,
+exposure, date), per the project's "don't strip EXIF" rule.
 """
 
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from loguru import logger
 from PIL import Image
 
 RAW_EXTENSIONS = {".nef", ".cr2", ".cr3", ".arw", ".dng", ".raf", ".rw2", ".orf", ".pef"}
 STANDARD_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 IMAGE_EXTENSIONS = STANDARD_IMAGE_EXTENSIONS | RAW_EXTENSIONS
+# Output formats whose Pillow writer accepts an `exif=` blob.
+EXIF_WRITABLE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".webp"}
 
 
 @dataclass
@@ -56,12 +61,57 @@ def load_image_rgb(path: str | Path) -> np.ndarray:
         return np.asarray(im.convert("RGB"))
 
 
-def save_image_rgb(arr: np.ndarray, path: str | Path, quality: int = 95) -> None:
-    """Save an HxWx3 uint8 RGB ndarray to disk (JPEG quality applies to .jpg/.jpeg)."""
+def _extract_exif(source_path: Path) -> bytes | None:
+    """Return raw EXIF bytes from a source image, or None if unavailable.
+
+    Standard images are read directly by Pillow. RAW files expose EXIF via
+    their embedded JPEG preview (which rawpy can extract), so we read the
+    preview's EXIF rather than the harder-to-parse raw container.
+    """
+    source_path = Path(source_path)
+    try:
+        if source_path.suffix.lower() in RAW_EXTENSIONS:
+            import rawpy
+
+            with rawpy.imread(str(source_path)) as raw:
+                thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                with Image.open(io.BytesIO(thumb.data)) as preview:
+                    return preview.info.get("exif")
+            return None
+        with Image.open(source_path) as im:
+            return im.info.get("exif")
+    except Exception as exc:  # noqa: BLE001 - EXIF is best-effort, never fatal
+        logger.debug("Could not extract EXIF from {}: {}", source_path, exc)
+        return None
+
+
+def save_image_rgb(
+    arr: np.ndarray,
+    path: str | Path,
+    quality: int = 95,
+    source_path: str | Path | None = None,
+) -> None:
+    """Save an HxWx3 uint8 RGB ndarray to disk (JPEG quality applies to .jpg/.jpeg).
+
+    When `source_path` is given and the output format supports it, EXIF metadata
+    from the source image is copied to the output so camera/lens/exposure/date
+    survive. Pixel data is never rotated or cropped, so an orientation tag
+    carried over keeps the same display semantics as the source.
+    """
     path = Path(path)
     if arr.dtype != np.uint8:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
-    Image.fromarray(arr, mode="RGB").save(path, quality=quality)
+
+    exif_bytes: bytes | None = None
+    if source_path is not None and path.suffix.lower() in EXIF_WRITABLE_EXTENSIONS:
+        exif_bytes = _extract_exif(Path(source_path))
+
+    img = Image.fromarray(arr, mode="RGB")
+    if exif_bytes:
+        img.save(path, quality=quality, exif=exif_bytes)
+    else:
+        img.save(path, quality=quality)
 
 
 def _index_images(folder: Path) -> dict[str, Path]:

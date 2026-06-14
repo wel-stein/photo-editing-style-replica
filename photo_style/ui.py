@@ -220,11 +220,68 @@ def helper_apply(
         suffix=".jpg", prefix=f"{profile_name}_styled_", delete=False
     )
     tmp.close()
-    save_image_rgb(styled, tmp.name)
+    save_image_rgb(styled, tmp.name, source_path=image_path)
 
     method = "B (RF)" if (use_rf and profile.cluster_transforms[cluster_id].pixel_rf is not None) else "A"
     status = f"Applied profile '{profile_name}' using cluster {cluster_id}, method {method}."
     return rgb, styled, tmp.name, status
+
+
+def helper_apply_batch(
+    profile_name: str,
+    image_paths: list[str] | None,
+    use_rf: bool,
+    *,
+    profiles_dir: Path = DEFAULT_PROFILES_DIR,
+    progress: Callable[[float, str], None] | None = None,
+) -> tuple[str | None, str]:
+    """Apply a profile to many images and bundle the results into a ZIP.
+
+    Returns (zip_path, status_message). Each output keeps its original
+    filename stem with a ``_styled.jpg`` suffix and carries source EXIF.
+    """
+    if not profile_name:
+        return None, "Pick a profile first."
+    if not image_paths:
+        return None, "Upload one or more images first."
+
+    profile = load_profile(profile_name, profiles_dir=profiles_dir)
+    out_dir = Path(tempfile.mkdtemp(prefix=f"{profile_name}_batch_"))
+
+    def _p(frac: float, desc: str) -> None:
+        if progress is not None:
+            progress(frac, desc)
+
+    failures: list[str] = []
+    n = len(image_paths)
+    for i, image_path in enumerate(image_paths, start=1):
+        stem = Path(image_path).stem
+        _p(i / (n + 1), f"Styling {i}/{n}: {stem}")
+        try:
+            rgb = load_image_rgb(image_path)
+            styled, _ = apply_profile(rgb, profile, use_rf=use_rf)
+            save_image_rgb(styled, out_dir / f"{stem}_styled.jpg", source_path=image_path)
+        except Exception as exc:  # noqa: BLE001 - one bad file shouldn't sink the batch
+            logger.warning("Batch: failed on {}: {}", image_path, exc)
+            failures.append(f"{stem} ({exc})")
+
+    _p(n / (n + 1), "Zipping results")
+    import zipfile
+
+    zip_tmp = tempfile.NamedTemporaryFile(
+        suffix=".zip", prefix=f"{profile_name}_styled_", delete=False
+    )
+    zip_tmp.close()
+    with zipfile.ZipFile(zip_tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(out_dir.glob("*.jpg")):
+            zf.write(f, arcname=f.name)
+    _p(1.0, "Done")
+
+    done = n - len(failures)
+    status = f"Styled {done}/{n} image(s) with '{profile_name}'."
+    if failures:
+        status += " Failed: " + "; ".join(failures)
+    return zip_tmp.name, status
 
 
 def helper_export_lut(
@@ -459,6 +516,25 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
                 apply_status = gr.Textbox(label="Status", interactive=False)
                 apply_download = gr.File(label="Download styled JPEG")
 
+                gr.Markdown(
+                    "### Batch\n"
+                    "Apply the selected profile to many photos at once and download a ZIP. "
+                    "Each output keeps its original filename (`NAME_styled.jpg`) and EXIF."
+                )
+                apply_batch_input = gr.File(
+                    label="Input images (multiple; JPG / PNG / RAW)",
+                    type="filepath",
+                    file_count="multiple",
+                    file_types=[
+                        "image",
+                        ".nef", ".cr2", ".cr3", ".arw", ".dng",
+                        ".raf", ".rw2", ".orf", ".pef",
+                    ],
+                )
+                apply_batch_btn = gr.Button("Apply to All & Zip", variant="primary")
+                apply_batch_status = gr.Textbox(label="Batch status", interactive=False)
+                apply_batch_download = gr.File(label="Download ZIP")
+
             # ---------- Quick Auto-Enhance ----------
             with gr.Tab("Quick Auto-Enhance"):
                 gr.Markdown(
@@ -605,6 +681,17 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
             )
             return before, after, dl, status
 
+        def _on_apply_batch(
+            profile_name: str, image_paths: list[str], use_rf: bool, progress=gr.Progress()
+        ):
+            def _cb(frac: float, desc: str) -> None:
+                progress(frac, desc=desc)
+
+            zip_path, status = helper_apply_batch(
+                profile_name, image_paths, use_rf, profiles_dir=profiles_dir, progress=_cb
+            )
+            return zip_path, status
+
         def _on_export_lut(
             profile_name: str, cluster_choice: str, size: float, use_rf: bool
         ):
@@ -641,6 +728,11 @@ def build_ui(profiles_dir: Path = DEFAULT_PROFILES_DIR) -> gr.Blocks:
             _on_apply,
             inputs=[apply_profile_dd, apply_input, apply_use_rf],
             outputs=[before_img, after_img, apply_download, apply_status],
+        )
+        apply_batch_btn.click(
+            _on_apply_batch,
+            inputs=[apply_profile_dd, apply_batch_input, apply_use_rf],
+            outputs=[apply_batch_download, apply_batch_status],
         )
         apply_refresh.click(_refresh_all, outputs=[apply_profile_dd, lut_profile_dd])
         lut_refresh.click(_refresh_all, outputs=[apply_profile_dd, lut_profile_dd])

@@ -9,6 +9,7 @@ dist/
 
 # Project artifacts
 profiles/
+.cache/
 data/originals/*
 data/edited/*
 !data/originals/.gitkeep

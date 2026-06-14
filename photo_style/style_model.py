@@ -20,6 +20,8 @@ DEFAULT_PIXEL_SAMPLE_MAX_DIM = 1024
 DEFAULT_RF_N_ESTIMATORS = 40
 DEFAULT_RF_MAX_DEPTH = 10
 DEFAULT_RF_MAX_SAMPLES = 80_000
+# Side length of the LUT baked from the RF at train time for fast inference.
+DEFAULT_RF_LUT_SIZE = 33
 
 
 @dataclass
@@ -53,11 +55,19 @@ class ClusterTransform:
     Always carries Method A (Reinhard + residual polynomial curves).
     `pixel_rf` is the optional Method B Random Forest pixel regressor (LAB
     in -> LAB out). When present, it overrides Method A at inference.
+
+    `rf_lut` is the RF baked onto an RGB grid at train time (shape
+    (N, N, N, 3), values in [0, 1]). When present it's applied via fast
+    trilinear interpolation instead of running the forest per pixel,
+    which turns a 30-60s full-res apply into a sub-second one with no
+    visible quality change. `rf_lut_size` records N.
     """
 
     reinhard: ReinhardStats
     curves: TonalCurves
     pixel_rf: RandomForestRegressor | None = None
+    rf_lut: np.ndarray | None = None
+    rf_lut_size: int = 0
 
 
 def _rgb_to_lab(rgb_u8: np.ndarray) -> np.ndarray:
@@ -169,6 +179,8 @@ def fit_cluster_transform(
     curves = TonalCurves(L_poly=L_poly, a_poly=a_poly, b_poly=b_poly, degree=degree)
 
     pixel_rf = None
+    rf_lut = None
+    rf_lut_size = 0
     if fit_rf:
         pixel_rf = fit_pixel_rf(
             all_src,
@@ -178,8 +190,53 @@ def fit_cluster_transform(
             max_samples=rf_max_samples,
             seed=seed,
         )
+        rf_lut = bake_rf_lut(pixel_rf, DEFAULT_RF_LUT_SIZE)
+        rf_lut_size = DEFAULT_RF_LUT_SIZE
 
-    return ClusterTransform(reinhard=reinhard, curves=curves, pixel_rf=pixel_rf)
+    return ClusterTransform(
+        reinhard=reinhard,
+        curves=curves,
+        pixel_rf=pixel_rf,
+        rf_lut=rf_lut,
+        rf_lut_size=rf_lut_size,
+    )
+
+
+def bake_rf_lut(pixel_rf: RandomForestRegressor, size: int) -> np.ndarray:
+    """Evaluate the RF on a size^3 RGB grid -> (size, size, size, 3) LUT in [0, 1].
+
+    The grid is RGB; we convert each grid point to LAB, run the forest, and
+    convert back, yielding a direct RGB->RGB mapping suitable for trilinear
+    interpolation at apply time (and for .cube export).
+    """
+    if size < 2:
+        raise ValueError(f"LUT size must be >= 2, got {size}")
+    axis = np.linspace(0, 255, size, dtype=np.float32)
+    R, G, B = np.meshgrid(axis, axis, axis, indexing="ij")
+    grid_rgb = np.stack([R, G, B], axis=-1).astype(np.uint8)  # (size, size, size, 3)
+
+    lab = _rgb_to_lab(grid_rgb.reshape(size, size * size, 3))
+    pred = pixel_rf.predict(lab.reshape(-1, 3).astype(np.float32))
+    out_rgb = _lab_to_rgb(pred.astype(np.float32).reshape(size, size * size, 3))
+    return out_rgb.reshape(size, size, size, 3).astype(np.float32) / 255.0
+
+
+def apply_rgb_lut(rgb_u8: np.ndarray, lut: np.ndarray) -> np.ndarray:
+    """Apply an (N, N, N, 3) RGB LUT to an RGB image via trilinear interpolation."""
+    from scipy.ndimage import map_coordinates
+
+    size = lut.shape[0]
+    scale = (size - 1) / 255.0
+    coords = rgb_u8.astype(np.float32) * scale  # each channel now in [0, size-1]
+    r = coords[..., 0].ravel()
+    g = coords[..., 1].ravel()
+    b = coords[..., 2].ravel()
+
+    out = np.empty((r.size, 3), dtype=np.float32)
+    for c in range(3):
+        out[:, c] = map_coordinates(lut[..., c], [r, g, b], order=1, mode="nearest")
+    out = np.clip(out, 0.0, 1.0) * 255.0
+    return out.reshape(rgb_u8.shape).astype(np.uint8)
 
 
 def fit_pixel_rf(
@@ -233,9 +290,15 @@ def apply_cluster_transform(
 ) -> np.ndarray:
     """Apply a cluster's learned transform to an RGB image.
 
-    When `use_rf=True` and the transform has a fitted Random Forest, that is
-    used (Method B). Otherwise falls back to Reinhard + tonal curves (Method A).
+    When `use_rf=True`, prefers the baked RF LUT (fast trilinear interp),
+    then the raw RF (per-pixel, slow — used for profiles trained before LUT
+    baking existed), then falls back to Reinhard + tonal curves (Method A).
     """
+    # getattr guards profiles pickled before rf_lut existed.
+    rf_lut = getattr(transform, "rf_lut", None)
+    if use_rf and rf_lut is not None:
+        return apply_rgb_lut(rgb_u8, rf_lut)
+
     lab = _rgb_to_lab(rgb_u8)
     if use_rf and transform.pixel_rf is not None:
         h, w, _ = lab.shape

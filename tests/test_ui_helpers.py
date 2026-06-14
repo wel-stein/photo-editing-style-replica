@@ -10,6 +10,7 @@ from PIL import Image
 from photo_style.ui import (
     _cluster_choices_for,
     helper_apply,
+    helper_apply_batch,
     helper_export_lut,
     helper_match_pairs,
     helper_train,
@@ -143,6 +144,39 @@ def test_helper_apply_missing_inputs() -> None:
     before, after, dl, status = helper_apply("", None, use_rf=False)
     assert before is None and after is None and dl is None
     assert "profile" in status.lower()
+
+
+def test_helper_apply_batch_produces_zip(tmp_path: Path) -> None:
+    import zipfile
+
+    originals, edited = _seed_synthetic_pairs(tmp_path, n=4)
+    profiles_dir = tmp_path / "profiles"
+    helper_train(
+        str(originals), str(edited), k=2, samples_per_pair=300, val_fraction=0.0,
+        use_rf=False, profile_name="batch_test", profiles_dir=profiles_dir,
+        cache_path=tmp_path / "cache.pkl",
+    )
+
+    inputs = [str(p) for p in sorted(originals.glob("*.jpg"))]
+    zip_path, status = helper_apply_batch(
+        "batch_test", inputs, use_rf=False, profiles_dir=profiles_dir
+    )
+    assert zip_path is not None and Path(zip_path).exists()
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+    assert len(names) == len(inputs)
+    assert all(n.endswith("_styled.jpg") for n in names)
+    assert f"{len(inputs)}/{len(inputs)}" in status
+
+
+def test_helper_apply_batch_missing_inputs() -> None:
+    zip_path, status = helper_apply_batch("", None, use_rf=False)
+    assert zip_path is None
+    assert "profile" in status.lower()
+
+    zip_path, status = helper_apply_batch("some_profile", [], use_rf=False)
+    assert zip_path is None
+    assert "upload" in status.lower()
 
 
 def test_helper_export_lut_average(tmp_path: Path) -> None:

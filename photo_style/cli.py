@@ -177,7 +177,7 @@ def _apply(args: argparse.Namespace) -> int:
         rgb, profile, use_rf=use_rf, override_cluster=args.cluster
     )
     elapsed = time.perf_counter() - t0
-    save_image_rgb(styled, args.output, quality=args.quality)
+    save_image_rgb(styled, args.output, quality=args.quality, source_path=args.input)
     logger.success(
         "Applied profile '{}' (cluster {}, method {}) in {:.1f}s -> {}",
         args.profile,

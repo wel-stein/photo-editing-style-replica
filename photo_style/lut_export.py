@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .profile_store import StyleProfile
-from .style_model import ClusterTransform, apply_cluster_transform
+from .style_model import ClusterTransform, apply_cluster_transform, bake_rf_lut
 
 DEFAULT_LUT_SIZE = 33
 
@@ -30,13 +30,19 @@ def generate_lut_array(
     """
     if size < 2:
         raise ValueError(f"LUT size must be >= 2, got {size}")
+
+    pixel_rf = getattr(transform, "pixel_rf", None)
+    if use_rf and pixel_rf is not None:
+        # Run the forest directly at the requested grid resolution so export
+        # stays exact at any size (not a resample of the baked apply-time LUT).
+        return bake_rf_lut(pixel_rf, size)
+
+    # Method A: sample the grid through Reinhard + tonal curves (exact, fast).
     axis = np.linspace(0, 255, size, dtype=np.float32)
     R, G, B = np.meshgrid(axis, axis, axis, indexing="ij")
     input_grid = np.stack([R, G, B], axis=-1).astype(np.uint8)  # (size, size, size, 3)
-
-    # Reshape into a 2D "image" so apply_cluster_transform can run unchanged.
     img = input_grid.reshape(size, size * size, 3)
-    styled = apply_cluster_transform(img, transform, use_rf=use_rf)
+    styled = apply_cluster_transform(img, transform, use_rf=False)
     return styled.reshape(size, size, size, 3).astype(np.float32) / 255.0
 
 

@@ -86,7 +86,9 @@ Open <http://127.0.0.1:7860>.
 
 ### 4. Apply to a new photo
 
-**Apply tab** → pick the profile → upload a photo (JPG or RAW) → click **Apply Profile**. Side-by-side Before/After appears; **Download** writes a JPEG at quality 95.
+**Apply tab** → pick the profile → upload a photo (JPG or RAW) → click **Apply Profile**. Side-by-side Before/After appears; **Download** writes a JPEG at quality 95. EXIF (camera, lens, exposure, date) from the source is carried over to the output.
+
+**Batch**: in the same tab, use the **Batch** section to drop in many photos at once and click **Apply to All & Zip** — you get a ZIP of `NAME_styled.jpg` files, each with EXIF preserved.
 
 ### 5. Export a LUT
 
@@ -203,10 +205,11 @@ The feature cache lives at `.cache/features.pkl` and is keyed by `(absolute path
 | Validation (Method A + B) on 20 pairs | ~10 s |
 | **Train, 100 pairs, k=4, RF on** | **~2–4 minutes** |
 | Apply Method A to a 24 MP RAW | ~3 s |
-| Apply Method B (RF) to a 24 MP RAW | ~30–60 s (it's per-pixel forest predict) |
-| Apply via exported .cube in Lightroom/DaVinci | sub-second (LUT interpolation) |
+| Apply Method B (RF) to a 24 MP RAW | ~13 s (baked LUT, trilinear interp) |
+| Apply Method B without LUT (older profiles) | ~35–60 s (per-pixel forest predict) |
+| Apply via exported .cube in Lightroom/DaVinci | sub-second (native LUT interpolation) |
 
-For full-res inference on RAW, the `.cube` LUT path is dramatically faster than running the RF directly. Train once, export, then use the LUT.
+At training time the Random Forest is baked onto a 33³ RGB grid stored in the profile, so applying Method B uses fast trilinear interpolation instead of a per-pixel forest predict — roughly 3–4× faster on a full-res RAW and independent of CPU speed. For the very fastest full-res workflow, export the `.cube` and apply it in Lightroom/DaVinci (native, sub-second).
 
 ---
 
@@ -269,7 +272,7 @@ Run the suite to confirm your install is working:
 ```bash
 python -m pytest tests/ -v
 ```
-Expect 61 tests passing.
+Expect 90 tests passing.
 
 ---
 
@@ -278,7 +281,7 @@ Expect 61 tests passing.
 - All math runs in **LAB** color space (perceptually uniform, not RGB)
 - RAW files are demosaiced to **16-bit linear** then converted to sRGB
 - Profiles are self-contained `.pkl` + `.json` (no full image data stored)
-- **EXIF is intentionally preserved by Pillow on JPEG re-save**; auto-rotate / auto-crop are not applied
+- **EXIF is preserved** on output: camera/lens/exposure/date are copied from the source (including RAW, via its embedded preview's metadata); auto-rotate / auto-crop are never applied, so a carried-over orientation tag keeps the source's display semantics
 - No PyTorch / TensorFlow / external APIs — only NumPy, SciPy, scikit-learn, scikit-image, colour-science, OpenCV, rawpy, Gradio
 
 ---
@@ -302,7 +305,7 @@ photo-editing-style-replica/
 │   ├── lut_export.py               # 33^3 .cube generation
 │   ├── cli.py                      # train / apply / export-lut / list
 │   └── ui.py                       # Gradio Blocks + helpers
-├── tests/                          # 61 tests
+├── tests/                          # 90 tests
 └── profiles/                       # saved profiles (gitignored)
 ```
 
